@@ -24,32 +24,20 @@ type KVServer struct {
 	// key-value store
 	store map[string]string
 	// contains the last successful request id and response for a client
-	pastRequests map[string]ClientData
+	pastRequests map[string]*ClientData
 }
 
 func (kv *KVServer) Get(args *GetArgs, reply *GetReply) {
 
-	if kv.canSendPreviousResponse(args, reply) {
-		return
-	}
-
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
-
-	clientData := ClientData{
-		lastSuccessfulRequestId: args.RequestId,
-	}
 
 	val, exists := kv.store[args.Key]
 
 	if exists {
 		reply.Value = val
-		clientData.lastSuccessfulResponse = val
-	} else {
-		clientData.lastSuccessfulResponse = ""
 	}
 
-	kv.pastRequests[args.ClientName] = clientData
 }
 
 func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
@@ -63,14 +51,11 @@ func (kv *KVServer) Put(args *PutAppendArgs, reply *PutAppendReply) {
 
 	clientData := ClientData{
 		lastSuccessfulRequestId: args.RequestId,
-		lastSuccessfulResponse: args.Value,
 	}
 
+	kv.pastRequests[args.ClientName] = &clientData
+
 	kv.store[args.Key] = args.Value
-
-	reply.Value = args.Value
-
-	kv.pastRequests[args.ClientName] = clientData
 }
 
 func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
@@ -97,7 +82,7 @@ func (kv *KVServer) Append(args *PutAppendArgs, reply *PutAppendReply) {
 		clientData.lastSuccessfulResponse = currentVal
 	}
 
-	kv.pastRequests[args.ClientName] = clientData
+	kv.pastRequests[args.ClientName] = &clientData
 }
 
 func (kv *KVServer) canSendPreviousResponse(args RpcArgs, reply RpcReply) bool {
@@ -121,7 +106,7 @@ func StartKVServer() *KVServer {
 	kv := &KVServer{
 		mu:    sync.Mutex{},
 		store: make(map[string]string),
-		pastRequests: make(map[string]ClientData),
+		pastRequests: make(map[string]*ClientData),
 	}
 
 	return kv
