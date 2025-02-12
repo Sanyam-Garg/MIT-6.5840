@@ -50,6 +50,11 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
+type LogEntry struct{
+	command string // placeholder, subject to change
+	term int
+}
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -58,10 +63,10 @@ type Raft struct {
 	me        int                 // this peer's index into peers[]
 	dead      int32               // set by Kill()
 
-	// Your data here (3A, 3B, 3C).
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
-
+	// Persistent state: updated on stable storage before responding to RPCs
+	currentTerm int
+	candidateVotedFor int // in the current term
+	log []*LogEntry
 }
 
 // return currentTerm and whether this server
@@ -124,21 +129,51 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 }
 
 
-// example RequestVote RPC arguments structure.
-// field names must start with capital letters!
 type RequestVoteArgs struct {
-	// Your data here (3A, 3B).
+	Term int // candidate's term
+	CandidateId int // candidate requesting vote
+	LastLogIndex int // index of candidate's last log entry
+	LastLogTerm int // term of candidate's last log entry
 }
 
-// example RequestVote RPC reply structure.
-// field names must start with capital letters!
+
 type RequestVoteReply struct {
-	// Your data here (3A).
+	Term int // the term of the node from which vote was requested, for the candidate to update its own term
+	VoteGranted bool
 }
 
 // example RequestVote RPC handler.
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+
+	// return if the candidate's term number is lesser than mine
+	if args.Term < rf.currentTerm {
+		return
+	}
+
+	// if not already voted for another candidate, vote for this candidate if its log is at least as updated as mine
+	if rf.candidateVotedFor == -1 { // || rf.candidateVotedFor == args.CandidateId ?? might need this according to the paper?
+		myLastLogTerm := rf.log[len(rf.log)-1].term
+		// if candidate has a larger last log entry term, it is more up to date than me
+		if args.LastLogTerm > myLastLogTerm {
+			reply.VoteGranted = true
+			rf.candidateVotedFor = args.CandidateId
+			return
+		}
+
+		// else if the last log entry term is same, check for log size
+		if args.LastLogTerm == myLastLogTerm && args.LastLogIndex >= len(rf.log) - 1 {
+			reply.VoteGranted = true
+			rf.candidateVotedFor = args.CandidateId
+			return
+		}
+
+		// do not vote for this candidate in any other case
+	}
 }
 
 // example code to send a RequestVote RPC to a server.
