@@ -55,6 +55,14 @@ type LogEntry struct{
 	term int
 }
 
+type State int8
+
+const (
+	Follower State = iota
+	Candidate
+	Leader
+)
+
 // A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect shared access to this peer's state
@@ -67,6 +75,9 @@ type Raft struct {
 	currentTerm int
 	candidateVotedFor int // in the current term
 	log []*LogEntry
+
+	// Volatile state: exists on all nodes
+	currentState State
 }
 
 // return currentTerm and whether this server
@@ -156,8 +167,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	// if not already voted for another candidate, vote for this candidate if its log is at least as updated as mine
-	if rf.candidateVotedFor == -1 { // || rf.candidateVotedFor == args.CandidateId ?? might need this according to the paper?
-		myLastLogTerm := rf.log[len(rf.log)-1].term
+	if rf.candidateVotedFor == -1 {
+		myLastLogTerm := rf.getLastLogTerm()
 		// if candidate has a larger last log entry term, it is more up to date than me
 		if args.LastLogTerm > myLastLogTerm {
 			reply.VoteGranted = true
@@ -173,6 +184,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 
 		// do not vote for this candidate in any other case
+	} else if rf.candidateVotedFor == args.CandidateId {
+		// this can happen in case the reply to the candidate was lost, and it retried the RPC
+		reply.VoteGranted = true
 	}
 }
 
@@ -254,15 +268,86 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) ticker() {
 	for rf.killed() == false {
 
-		// Your code here (3A)
-		// Check if a leader election should be started.
+		// TODO: think about where we need the mutex lock
+		if rf.ShouldStartElection() {
+			// increment current term and start election
+			rf.currentTerm++
+			rf.currentState = Candidate
 
+			// vote for itself
+			rf.candidateVotedFor = rf.me
 
+			votesReceived := rf.requestVotes()
+
+			if votesReceived > len(rf.peers)/2 {
+				// received majority votes, transition to leader
+				// TODO: send heartbeats
+				rf.currentState = Leader
+			}
+		}
+
+		
 		// pause for a random amount of time between 50 and 350
-		// milliseconds.
+		// milliseconds. This is jitter
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 	}
+}
+
+func (rf *Raft) ShouldStartElection() bool {
+	// TODO: to be implemented
+	return false
+}
+
+// request vote from all peers
+func (rf *Raft) requestVotes() int {
+	var votesReceived int32 = 0
+
+	wg := sync.WaitGroup{}
+
+	for idx := range rf.peers {
+		if idx != rf.me {
+			wg.Add(1)
+			
+			go func (server int)  {
+				defer wg.Done()
+
+				args := &RequestVoteArgs{
+					Term: rf.currentTerm,
+					CandidateId: rf.me,
+					LastLogIndex: len(rf.log)-1,
+					LastLogTerm: rf.getLastLogTerm(),
+				}
+				reply := &RequestVoteReply{}
+		
+				for {
+					if rf.sendRequestVote(server, args, reply) {
+						break
+					}
+				}
+		
+				if reply.VoteGranted {
+					atomic.AddInt32(&votesReceived, 1)
+				} else if reply.Term > rf.currentTerm {
+					rf.currentTerm = reply.Term
+				}
+			}(idx)
+		}
+	}
+
+	// wait for all RPCs to complete
+	wg.Wait()
+
+	return int(votesReceived)
+}
+
+// get the last log term for a node
+func (rf *Raft) getLastLogTerm() int {
+	if len(rf.log) == 0 {
+		return 0
+	}
+
+	return rf.log[len(rf.log) - 1].term
 }
 
 // the service or tester wants to create a Raft server. the ports
@@ -276,10 +361,15 @@ func (rf *Raft) ticker() {
 // for any long-running work.
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
-	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
+	rf := &Raft{
+		peers: peers,
+		persister: persister,
+		me: me,
+		currentTerm: 0,
+		candidateVotedFor: -1,
+		log: make([]*LogEntry, 0),
+		currentState: Follower,
+	}
 
 	// Your initialization code here (3A, 3B, 3C).
 
