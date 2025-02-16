@@ -30,7 +30,7 @@ import (
 )
 
 const (
-	ElectionTimeout = time.Second * 3
+	ElectionTimeout = time.Millisecond * 3500
 )
 
 // as each Raft peer becomes aware that successive log entries are
@@ -162,6 +162,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	fmt.Printf("[node %d, term %d, state %v]: received request vote RPC %v\n", rf.me, rf.currentTerm, rf.currentState, args)
+
 	reply.Term = rf.currentTerm
 
 	// return if the candidate's term number is lesser than mine
@@ -171,7 +173,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// if candidate's term is higher than mine, update my term and transition to follower
 	if args.Term > rf.currentTerm {
+		fmt.Printf("[node %d, term %d, state %v]: candidate's term (%d) higher than mine, updating and transitioning to follower\n", rf.me, rf.currentTerm, rf.currentState, args.Term)
 		rf.currentTerm = args.Term
+		rf.candidateVotedFor = -1
 		rf.currentState = Follower
 	}
 
@@ -180,6 +184,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		myLastLogTerm := rf.getLastLogTerm()
 		// if candidate has a larger last log entry term, it is more up to date than me
 		if args.LastLogTerm > myLastLogTerm {
+			fmt.Printf("[node %d, term %d, state %v]: candidate has a larger last log entry term, voting\n", rf.me, rf.currentTerm, rf.currentState)
+
 			reply.VoteGranted = true
 			rf.candidateVotedFor = args.CandidateId
 			rf.lastSuccessRPCReceivedTime = time.Now()
@@ -188,13 +194,14 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 		// else if the last log entry term is same, check for log size
 		if args.LastLogTerm == myLastLogTerm && args.LastLogIndex >= len(rf.log) - 1 {
+			fmt.Printf("[node %d, term %d, state %v]: candidate has a longer log, voting\n", rf.me, rf.currentTerm, rf.currentState)
+
 			reply.VoteGranted = true
 			rf.candidateVotedFor = args.CandidateId
 			rf.lastSuccessRPCReceivedTime = time.Now()
 			return
 		}
 
-		// do not vote for this candidate in any other case
 	} else if rf.candidateVotedFor == args.CandidateId {
 		// this can happen in case the reply to the candidate was lost, and it retried the RPC
 		reply.VoteGranted = true
@@ -304,6 +311,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	fmt.Printf("[node %d, term %d, state %v]: received append entries RPC %v\n", rf.me, rf.currentTerm, rf.currentState, args)
+
 	reply.Term = rf.currentTerm
 
 	// don't do anything if term of the leader is outdated
@@ -311,15 +320,17 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 
-	// don't do anything if the entry at prevLogIndex does not have the same term as prevLogTerm
-	if rf.getLogTermAtIndex(args.PrevLogIndex) != args.PrevLogTerm {
-		return
-	}
-
 	// if leader's term is higher than mine, update my term and transition to follower
 	if args.Term > rf.currentTerm {
 		rf.currentTerm = args.Term
+		rf.candidateVotedFor = -1
 		rf.currentState = Follower
+	}
+
+	// don't do anything if the entry at prevLogIndex does not have the same term as prevLogTerm
+	if rf.getLogTermAtIndex(args.PrevLogIndex) != args.PrevLogTerm {
+		fmt.Printf("[node %d, term %d, state %v]: entry at prevLogIndex does not have the same term as prevLogTerm\n", rf.me, rf.currentTerm, rf.currentState)
+		return
 	}
 
 	rf.lastSuccessRPCReceivedTime = time.Now()
@@ -330,7 +341,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 func (rf *Raft) sendHeartbeats() {
 	for rf.currentState == Leader{
-		rf.mu.Lock()
 		// send empty AppendEntriesRPC to all servers except myself
 		for idx := range rf.peers {
 			if idx != rf.me {
@@ -340,22 +350,24 @@ func (rf *Raft) sendHeartbeats() {
 						LeaderId: rf.me,
 						PrevLogIndex: rf.getLastLogIndex(),
 						PrevLogTerm: rf.getLastLogTerm(),
-						Entries: make([]*LogEntry, 0),
+						Entries: []*LogEntry{{Command: "", Term: rf.currentTerm}},
 					}
 					reply := &AppendEntriesReply{}
 			
 					if rf.sendAppendEntries(server, args, reply) {
 						if reply.Term > rf.currentTerm {
+							rf.mu.Lock()
 							// if a node has a higher term than me, I'm not the leader anymore
 							fmt.Printf("[node %d, term %d, state %v]: node %d has a higher term (%d) than me, transitioning to follower\n", rf.me, rf.currentTerm, rf.currentState, server, reply.Term)
 							rf.currentTerm = reply.Term
+							rf.candidateVotedFor = -1
 							rf.currentState = Follower
+							rf.mu.Unlock()
 						}
 					}
 				}(idx)
 			}
 		}
-		rf.mu.Unlock()
 		// send 10 hearbeats in 1 second
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -400,7 +412,7 @@ func (rf *Raft) ticker() {
 
 			fmt.Printf("[node %d, term %d, state %v]: received %d votes\n", rf.me, rf.currentTerm, rf.currentState, votesReceived)
 
-			if votesReceived + 1 < len(rf.peers) / 2 {
+			if votesReceived + 1 <= len(rf.peers) / 2 {
 				// did not receive majority votes
 				rf.mu.Unlock()
 				continue
@@ -450,6 +462,7 @@ func (rf *Raft) requestVotes() int {
 						// if a node has higher term than me, update my own term and transition to follower
 						fmt.Printf("[node %d, term %d, state %v]: node %d has higher term (%d) than me, transitioning to follower\n", rf.me, rf.currentTerm, rf.currentState, server, reply.Term)
 						rf.currentTerm = reply.Term
+						rf.candidateVotedFor = -1
 						rf.currentState = Follower
 					}
 				}
