@@ -19,7 +19,7 @@ package raft
 
 import (
 	//	"bytes"
-	"fmt"
+
 	"math/rand"
 	"sync"
 	"sync/atomic"
@@ -54,9 +54,9 @@ type ApplyMsg struct {
 	SnapshotIndex int
 }
 
-type LogEntry struct{
+type LogEntry struct {
 	Command string // placeholder, subject to change
-	Term int
+	Term    int
 }
 
 type State int8
@@ -76,12 +76,12 @@ type Raft struct {
 	dead      int32               // set by Kill()
 
 	// Persistent state: updated on stable storage before responding to RPCs
-	currentTerm int
+	currentTerm       int
 	candidateVotedFor int // in the current term
-	log []*LogEntry
+	log               []*LogEntry
 
 	// Volatile state: exists on all nodes
-	currentState State
+	currentState               State
 	lastSuccessRPCReceivedTime time.Time
 }
 
@@ -111,7 +111,6 @@ func (rf *Raft) persist() {
 	// rf.persister.Save(raftstate, nil)
 }
 
-
 // restore previously persisted state.
 func (rf *Raft) readPersist(data []byte) {
 	if data == nil || len(data) < 1 { // bootstrap without any state?
@@ -132,7 +131,6 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
 // the service says it has created a snapshot that has
 // all info up to and including index. this means the
 // service no longer needs the log through (and including)
@@ -142,17 +140,15 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-
 type RequestVoteArgs struct {
-	Term int // candidate's term
-	CandidateId int // candidate requesting vote
+	Term         int // candidate's term
+	CandidateId  int // candidate requesting vote
 	LastLogIndex int // index of candidate's last log entry
-	LastLogTerm int // term of candidate's last log entry
+	LastLogTerm  int // term of candidate's last log entry
 }
 
-
 type RequestVoteReply struct {
-	Term int // the term of the node from which vote was requested, for the candidate to update its own term
+	Term        int // the term of the node from which vote was requested, for the candidate to update its own term
 	VoteGranted bool
 }
 
@@ -161,8 +157,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (3A, 3B).
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	fmt.Printf("[node %d, term %d, state %v]: received request vote RPC %v\n", rf.me, rf.currentTerm, rf.currentState, args)
 
 	reply.Term = rf.currentTerm
 
@@ -173,7 +167,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	// if candidate's term is higher than mine, update my term and transition to follower
 	if args.Term > rf.currentTerm {
-		fmt.Printf("[node %d, term %d, state %v]: candidate's term (%d) higher than mine, updating and transitioning to follower\n", rf.me, rf.currentTerm, rf.currentState, args.Term)
 		rf.currentTerm = args.Term
 		rf.candidateVotedFor = -1
 		rf.currentState = Follower
@@ -184,7 +177,6 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		myLastLogTerm := rf.getLastLogTerm()
 		// if candidate has a larger last log entry term, it is more up to date than me
 		if args.LastLogTerm > myLastLogTerm {
-			fmt.Printf("[node %d, term %d, state %v]: candidate has a larger last log entry term, voting\n", rf.me, rf.currentTerm, rf.currentState)
 
 			reply.VoteGranted = true
 			rf.candidateVotedFor = args.CandidateId
@@ -193,8 +185,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		}
 
 		// else if the last log entry term is same, check for log size
-		if args.LastLogTerm == myLastLogTerm && args.LastLogIndex >= len(rf.log) - 1 {
-			fmt.Printf("[node %d, term %d, state %v]: candidate has a longer log, voting\n", rf.me, rf.currentTerm, rf.currentState)
+		if args.LastLogTerm == myLastLogTerm && args.LastLogIndex >= len(rf.log)-1 {
 
 			reply.VoteGranted = true
 			rf.candidateVotedFor = args.CandidateId
@@ -247,7 +238,6 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -266,7 +256,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (3B).
-
 
 	return index, term, isLeader
 }
@@ -292,16 +281,15 @@ func (rf *Raft) killed() bool {
 
 type AppendEntriesArgs struct {
 	// required for leader election to be successful
-	Term int // leader's term
-	LeaderId int
-	PrevLogIndex int 
-	PrevLogTerm int
-	Entries []*LogEntry // entries that the receiving node should append to its log
+	Term         int // leader's term
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []*LogEntry // entries that the receiving node should append to its log
 }
 
-
 type AppendEntriesReply struct {
-	Term int // the term of the node from which vote was requested, for the leader to update its own term
+	Term    int // the term of the node from which vote was requested, for the leader to update its own term
 	Success bool
 }
 
@@ -310,8 +298,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	fmt.Printf("[node %d, term %d, state %v]: received append entries RPC %v\n", rf.me, rf.currentTerm, rf.currentState, args)
 
 	reply.Term = rf.currentTerm
 
@@ -329,7 +315,6 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 	// don't do anything if the entry at prevLogIndex does not have the same term as prevLogTerm
 	if rf.getLogTermAtIndex(args.PrevLogIndex) != args.PrevLogTerm {
-		fmt.Printf("[node %d, term %d, state %v]: entry at prevLogIndex does not have the same term as prevLogTerm\n", rf.me, rf.currentTerm, rf.currentState)
 		return
 	}
 
@@ -349,25 +334,21 @@ func (rf *Raft) sendHeartbeats() {
 	for idx := range rf.peers {
 		if idx != rf.me {
 			wg.Add(1)
-			go func (server int)  {
+			go func(server int) {
 				defer wg.Done()
 				args := &AppendEntriesArgs{
-					Term: rf.currentTerm,
-					LeaderId: rf.me,
+					Term:         rf.currentTerm,
+					LeaderId:     rf.me,
 					PrevLogIndex: rf.getLastLogIndex(),
-					PrevLogTerm: rf.getLastLogTerm(),
-					Entries: []*LogEntry{{Command: "", Term: rf.currentTerm}},
+					PrevLogTerm:  rf.getLastLogTerm(),
+					Entries:      []*LogEntry{{Command: "", Term: rf.currentTerm}},
 				}
 				reply := &AppendEntriesReply{}
-		
+
 				if rf.sendAppendEntries(server, args, reply) {
 					if reply.Term > rf.currentTerm {
 						// if a node has a higher term than me, I'm not the leader anymore
-						fmt.Printf("[node %d, term %d, state %v]: node %d has a higher term (%d) than me, transitioning to follower\n", rf.me, rf.currentTerm, rf.currentState, server, reply.Term)
 						receivedTerms[server] = reply.Term
-						// rf.currentTerm = reply.Term
-						// rf.candidateVotedFor = -1
-						// rf.currentState = Follower
 					}
 				}
 			}(idx)
@@ -406,7 +387,6 @@ func (rf *Raft) ticker() {
 				continue
 			}
 			// else, transition to candidate
-			fmt.Printf("[node %d, term %d, state %v]: transitioning to candidate from follower\n", rf.me, rf.currentTerm, rf.currentState)
 			rf.currentState = Candidate
 		case Candidate:
 			if time.Since(rf.lastSuccessRPCReceivedTime) < ElectionTimeout {
@@ -419,25 +399,18 @@ func (rf *Raft) ticker() {
 			rf.lastSuccessRPCReceivedTime = time.Now()
 			// vote for myself
 			rf.candidateVotedFor = rf.me
-
-			fmt.Printf("[node %d, term %d, state %v]: starting election\n", rf.me, rf.currentTerm, rf.currentState)
 			// request votes
 			votesReceived := rf.requestVotes()
 
-			fmt.Printf("[node %d, term %d, state %v]: received %d votes\n", rf.me, rf.currentTerm, rf.currentState, votesReceived)
-
-			if votesReceived + 1 <= len(rf.peers) / 2 {
+			if votesReceived+1 <= len(rf.peers)/2 {
 				// did not receive majority votes
 				rf.mu.Unlock()
 				continue
 			}
-
-			fmt.Printf("[node %d, term %d, state %v]: received majority votes, transitioning to leader\n", rf.me, rf.currentTerm, rf.currentState)
 			// received majority votes, transition to leader
 			rf.currentState = Leader
 		case Leader:
 			// send heartbeats
-			fmt.Printf("[node %d, term %d, state %v]: sending heartbeats as the leader\n", rf.me, rf.currentTerm, rf.currentState)
 			rf.sendHeartbeats()
 		}
 		rf.mu.Unlock()
@@ -455,31 +428,25 @@ func (rf *Raft) requestVotes() int {
 	for idx := range rf.peers {
 		if idx != rf.me {
 			wg.Add(1)
-			
-			go func (server int)  {
+
+			go func(server int) {
 				defer wg.Done()
 
 				args := &RequestVoteArgs{
-					Term: rf.currentTerm,
-					CandidateId: rf.me,
-					LastLogIndex: len(rf.log)-1,
-					LastLogTerm: rf.getLastLogTerm(),
+					Term:         rf.currentTerm,
+					CandidateId:  rf.me,
+					LastLogIndex: len(rf.log) - 1,
+					LastLogTerm:  rf.getLastLogTerm(),
 				}
 				reply := &RequestVoteReply{}
-	
-				fmt.Printf("[node %d, term %d, state %v]: requesting vote from node %d\n", rf.me, rf.currentTerm, rf.currentState, server)
+
 				if rf.sendRequestVote(server, args, reply) {
 					if reply.VoteGranted {
-						fmt.Printf("[node %d, term %d, state %v]: received vote from node %d\n", rf.me, rf.currentTerm, rf.currentState, server)
 						atomic.AddInt32(&votesReceived, 1)
 					}
 					if reply.Term > rf.currentTerm {
 						// if a node has higher term than me, update my own term and transition to follower
-						fmt.Printf("[node %d, term %d, state %v]: node %d has higher term (%d) than me, transitioning to follower\n", rf.me, rf.currentTerm, rf.currentState, server, reply.Term)
 						receivedTerms[server] = reply.Term
-						// rf.currentTerm = reply.Term
-						// rf.candidateVotedFor = -1
-						// rf.currentState = Follower
 					}
 				}
 			}(idx)
@@ -514,7 +481,7 @@ func (rf *Raft) getLastLogTerm() int {
 		return -1
 	}
 
-	return rf.log[len(rf.log) - 1].Term
+	return rf.log[len(rf.log)-1].Term
 }
 
 // get log term for a given index for a node
@@ -539,13 +506,13 @@ func (rf *Raft) getLogTermAtIndex(idx int) int {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{
-		peers: peers,
-		persister: persister,
-		me: me,
-		currentTerm: 0,
+		peers:             peers,
+		persister:         persister,
+		me:                me,
+		currentTerm:       0,
 		candidateVotedFor: -1,
-		log: make([]*LogEntry, 0),
-		currentState: Follower,
+		log:               make([]*LogEntry, 0),
+		currentState:      Follower,
 	}
 
 	// Your initialization code here (3A, 3B, 3C).
@@ -555,7 +522,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// start ticker goroutine to start elections
 	go rf.ticker()
-
 
 	return rf
 }
