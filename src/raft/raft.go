@@ -341,7 +341,10 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 
 func (rf *Raft) sendHeartbeats() {
 
+	receivedTerms := make([]int, len(rf.peers))
+
 	wg := sync.WaitGroup{}
+	receivedTerms[rf.me] = rf.currentTerm
 	// send empty AppendEntriesRPC to all servers except myself
 	for idx := range rf.peers {
 		if idx != rf.me {
@@ -361,9 +364,10 @@ func (rf *Raft) sendHeartbeats() {
 					if reply.Term > rf.currentTerm {
 						// if a node has a higher term than me, I'm not the leader anymore
 						fmt.Printf("[node %d, term %d, state %v]: node %d has a higher term (%d) than me, transitioning to follower\n", rf.me, rf.currentTerm, rf.currentState, server, reply.Term)
-						rf.currentTerm = reply.Term
-						rf.candidateVotedFor = -1
-						rf.currentState = Follower
+						receivedTerms[server] = reply.Term
+						// rf.currentTerm = reply.Term
+						// rf.candidateVotedFor = -1
+						// rf.currentState = Follower
 					}
 				}
 			}(idx)
@@ -371,6 +375,19 @@ func (rf *Raft) sendHeartbeats() {
 	}
 
 	wg.Wait()
+
+	maxTermReceived := -1
+	for _, term := range receivedTerms {
+		if term > maxTermReceived {
+			maxTermReceived = term
+		}
+	}
+
+	if maxTermReceived > rf.currentTerm {
+		rf.currentTerm = maxTermReceived
+		rf.candidateVotedFor = -1
+		rf.currentState = Follower
+	}
 }
 
 func (rf *Raft) ticker() {
@@ -430,8 +447,10 @@ func (rf *Raft) ticker() {
 // request vote from all peers
 func (rf *Raft) requestVotes() int {
 	var votesReceived int32 = 0
+	receivedTerms := make([]int, len(rf.peers))
 
 	wg := sync.WaitGroup{}
+	receivedTerms[rf.me] = rf.currentTerm
 
 	for idx := range rf.peers {
 		if idx != rf.me {
@@ -457,9 +476,10 @@ func (rf *Raft) requestVotes() int {
 					if reply.Term > rf.currentTerm {
 						// if a node has higher term than me, update my own term and transition to follower
 						fmt.Printf("[node %d, term %d, state %v]: node %d has higher term (%d) than me, transitioning to follower\n", rf.me, rf.currentTerm, rf.currentState, server, reply.Term)
-						rf.currentTerm = reply.Term
-						rf.candidateVotedFor = -1
-						rf.currentState = Follower
+						receivedTerms[server] = reply.Term
+						// rf.currentTerm = reply.Term
+						// rf.candidateVotedFor = -1
+						// rf.currentState = Follower
 					}
 				}
 			}(idx)
@@ -469,6 +489,18 @@ func (rf *Raft) requestVotes() int {
 	// wait for all RPCs to complete
 	wg.Wait()
 
+	maxTermReceived := -1
+	for _, term := range receivedTerms {
+		if term > maxTermReceived {
+			maxTermReceived = term
+		}
+	}
+
+	if maxTermReceived > rf.currentTerm {
+		rf.currentTerm = maxTermReceived
+		rf.candidateVotedFor = -1
+		rf.currentState = Follower
+	}
 	return int(votesReceived)
 }
 
