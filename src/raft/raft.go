@@ -340,37 +340,37 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 }
 
 func (rf *Raft) sendHeartbeats() {
-	for rf.currentState == Leader{
-		// send empty AppendEntriesRPC to all servers except myself
-		for idx := range rf.peers {
-			if idx != rf.me {
-				go func (server int)  {
-					args := &AppendEntriesArgs{
-						Term: rf.currentTerm,
-						LeaderId: rf.me,
-						PrevLogIndex: rf.getLastLogIndex(),
-						PrevLogTerm: rf.getLastLogTerm(),
-						Entries: []*LogEntry{{Command: "", Term: rf.currentTerm}},
+
+	wg := sync.WaitGroup{}
+	// send empty AppendEntriesRPC to all servers except myself
+	for idx := range rf.peers {
+		if idx != rf.me {
+			wg.Add(1)
+			go func (server int)  {
+				defer wg.Done()
+				args := &AppendEntriesArgs{
+					Term: rf.currentTerm,
+					LeaderId: rf.me,
+					PrevLogIndex: rf.getLastLogIndex(),
+					PrevLogTerm: rf.getLastLogTerm(),
+					Entries: []*LogEntry{{Command: "", Term: rf.currentTerm}},
+				}
+				reply := &AppendEntriesReply{}
+		
+				if rf.sendAppendEntries(server, args, reply) {
+					if reply.Term > rf.currentTerm {
+						// if a node has a higher term than me, I'm not the leader anymore
+						fmt.Printf("[node %d, term %d, state %v]: node %d has a higher term (%d) than me, transitioning to follower\n", rf.me, rf.currentTerm, rf.currentState, server, reply.Term)
+						rf.currentTerm = reply.Term
+						rf.candidateVotedFor = -1
+						rf.currentState = Follower
 					}
-					reply := &AppendEntriesReply{}
-			
-					if rf.sendAppendEntries(server, args, reply) {
-						if reply.Term > rf.currentTerm {
-							rf.mu.Lock()
-							// if a node has a higher term than me, I'm not the leader anymore
-							fmt.Printf("[node %d, term %d, state %v]: node %d has a higher term (%d) than me, transitioning to follower\n", rf.me, rf.currentTerm, rf.currentState, server, reply.Term)
-							rf.currentTerm = reply.Term
-							rf.candidateVotedFor = -1
-							rf.currentState = Follower
-							rf.mu.Unlock()
-						}
-					}
-				}(idx)
-			}
+				}
+			}(idx)
 		}
-		// send 10 hearbeats in 1 second
-		time.Sleep(100 * time.Millisecond)
 	}
+
+	wg.Wait()
 }
 
 func (rf *Raft) ticker() {
@@ -381,9 +381,9 @@ func (rf *Raft) ticker() {
 		ms := 50 + (rand.Int63() % 300)
 		time.Sleep(time.Duration(ms) * time.Millisecond)
 
+		rf.mu.Lock()
 		switch rf.currentState {
 		case Follower:
-			rf.mu.Lock()
 			if time.Since(rf.lastSuccessRPCReceivedTime) < ElectionTimeout {
 				rf.mu.Unlock()
 				continue
@@ -391,10 +391,7 @@ func (rf *Raft) ticker() {
 			// else, transition to candidate
 			fmt.Printf("[node %d, term %d, state %v]: transitioning to candidate from follower\n", rf.me, rf.currentTerm, rf.currentState)
 			rf.currentState = Candidate
-			rf.mu.Unlock()
-			fallthrough
 		case Candidate:
-			rf.mu.Lock()
 			if time.Since(rf.lastSuccessRPCReceivedTime) < ElectionTimeout {
 				rf.mu.Unlock()
 				continue
@@ -421,13 +418,12 @@ func (rf *Raft) ticker() {
 			fmt.Printf("[node %d, term %d, state %v]: received majority votes, transitioning to leader\n", rf.me, rf.currentTerm, rf.currentState)
 			// received majority votes, transition to leader
 			rf.currentState = Leader
-			rf.mu.Unlock()
-			fallthrough
 		case Leader:
 			// send heartbeats
 			fmt.Printf("[node %d, term %d, state %v]: sending heartbeats as the leader\n", rf.me, rf.currentTerm, rf.currentState)
 			rf.sendHeartbeats()
 		}
+		rf.mu.Unlock()
 	}
 }
 
