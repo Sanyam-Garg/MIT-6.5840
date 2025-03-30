@@ -55,7 +55,7 @@ type ApplyMsg struct {
 }
 
 type LogEntry struct {
-	Command string // placeholder, subject to change
+	Command interface{} // placeholder, subject to change
 	Term    int
 }
 
@@ -201,6 +201,51 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// else i've already voted for someone, don't do anything
 }
 
+type AppendEntriesArgs struct {
+	// required for leader election to be successful
+	Term         int // leader's term
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	Entries      []*LogEntry // entries that the receiving node should append to its log
+}
+
+type AppendEntriesReply struct {
+	Term    int // the term of the node from which vote was requested, for the leader to update its own term
+	Success bool
+}
+
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	// more to be added
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	reply.Term = rf.currentTerm
+
+	// don't do anything if term of the leader is outdated
+	if args.Term < rf.currentTerm {
+		return
+	}
+
+	// if leader's term is higher than mine, update my term and transition to follower
+	if args.Term > rf.currentTerm {
+		rf.currentTerm = args.Term
+		rf.candidateVotedFor = -1
+		rf.currentState = Follower
+	}
+
+	// don't do anything if the entry at prevLogIndex does not have the same term as prevLogTerm
+	if rf.getLogTermAtIndex(args.PrevLogIndex) != args.PrevLogTerm {
+		return
+	}
+
+	rf.lastSuccessRPCReceivedTime = time.Now()
+
+	// append the log entries
+	rf.log = append(rf.log, args.Entries...)
+}
+
 // example code to send a RequestVote RPC to a server.
 // server is the index of the target server in rf.peers[].
 // expects RPC arguments in args.
@@ -251,13 +296,32 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 // term. the third return value is true if this server believes it is
 // the leader.
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
-	index := -1
-	term := -1
-	isLeader := true
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 
-	// Your code here (3B).
+	// return false if the node is not the leader. although technically it should forward the request to the leader in this case?
+	if _, isLeader := rf.GetState(); !isLeader {
+		return -1, -1, false
+	}
 
-	return index, term, isLeader
+	// else append to its log and start agreement
+	rf.log = append(rf.log, &LogEntry{
+		Command: command,
+		Term: rf.currentTerm,
+	})
+
+	go rf.startAgreement(command)
+
+	return rf.getLastLogIndex(), rf.currentTerm, true
+}
+
+func (rf *Raft) startAgreement(command interface{}) {
+	// send append entry RPCs all nodes except myself
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+
+	
+
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -277,51 +341,6 @@ func (rf *Raft) Kill() {
 func (rf *Raft) killed() bool {
 	z := atomic.LoadInt32(&rf.dead)
 	return z == 1
-}
-
-type AppendEntriesArgs struct {
-	// required for leader election to be successful
-	Term         int // leader's term
-	LeaderId     int
-	PrevLogIndex int
-	PrevLogTerm  int
-	Entries      []*LogEntry // entries that the receiving node should append to its log
-}
-
-type AppendEntriesReply struct {
-	Term    int // the term of the node from which vote was requested, for the leader to update its own term
-	Success bool
-}
-
-func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	// more to be added
-
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
-
-	reply.Term = rf.currentTerm
-
-	// don't do anything if term of the leader is outdated
-	if args.Term < rf.currentTerm {
-		return
-	}
-
-	// if leader's term is higher than mine, update my term and transition to follower
-	if args.Term > rf.currentTerm {
-		rf.currentTerm = args.Term
-		rf.candidateVotedFor = -1
-		rf.currentState = Follower
-	}
-
-	// don't do anything if the entry at prevLogIndex does not have the same term as prevLogTerm
-	if rf.getLogTermAtIndex(args.PrevLogIndex) != args.PrevLogTerm {
-		return
-	}
-
-	rf.lastSuccessRPCReceivedTime = time.Now()
-
-	// append the log entries
-	rf.log = append(rf.log, args.Entries...)
 }
 
 func (rf *Raft) sendHeartbeats() {
@@ -514,8 +533,6 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		log:               make([]*LogEntry, 0),
 		currentState:      Follower,
 	}
-
-	// Your initialization code here (3A, 3B, 3C).
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
