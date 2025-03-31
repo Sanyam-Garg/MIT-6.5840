@@ -83,6 +83,11 @@ type Raft struct {
 	// Volatile state: exists on all nodes
 	currentState               State
 	lastSuccessRPCReceivedTime time.Time
+	commitIndex                int // the index of the highest log entry known to be committed
+
+	// Volatile state: meaningful only on a leader
+	nextIndex  []int // for each server, the index of the next log entry to send to that server
+	matchIndex []int // for each server, the index of the highest log entry known to be replicated on a server
 }
 
 // return currentTerm and whether this server
@@ -208,6 +213,7 @@ type AppendEntriesArgs struct {
 	PrevLogIndex int
 	PrevLogTerm  int
 	Entries      []*LogEntry // entries that the receiving node should append to its log
+	CommitIndex  int         // the index of the highest entry known to be committed by the leader
 }
 
 type AppendEntriesReply struct {
@@ -307,7 +313,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// else append to its log and start agreement
 	rf.log = append(rf.log, &LogEntry{
 		Command: command,
-		Term: rf.currentTerm,
+		Term:    rf.currentTerm,
 	})
 
 	go rf.startAgreement(command)
@@ -315,13 +321,100 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	return rf.getLastLogIndex(), rf.currentTerm, true
 }
 
+// the leader sends appendEntrieaRPC to all other peers.
+// when or if the entry is "safely replicated" --> replicated on a majority of the servers,
+// the leader applies the entry to its own state machine.
+// if the followers crash, run slowly, or network packets are lost, the leader retries the rpcs indefinitely
+// until all followers eventually store all log entries.
 func (rf *Raft) startAgreement(command interface{}) {
-	// send append entry RPCs all nodes except myself
+	// send append entry RPCs to all nodes except myself
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	
+	successCount := 0
+	successCountMutex := sync.Mutex{}
 
+	N := len(rf.peers) - 1
+	majority := N/2 + 1
+
+	for idx := range rf.peers {
+		if idx != rf.me {
+			go func(server int) {
+				args := &AppendEntriesArgs{
+					Term:         rf.currentTerm,
+					LeaderId:     rf.me,
+					PrevLogIndex: rf.getLastLogIndex(),
+					PrevLogTerm:  rf.getLastLogTerm(),
+					Entries:      []*LogEntry{{Command: command, Term: rf.currentTerm}},
+					CommitIndex:  rf.commitIndex,
+				}
+				reply := &AppendEntriesReply{}
+
+				i := 1
+
+				// send the append entries in a loop, since we want to retry in case of any failures
+				// but not wait for all servers, since that would make us unfunctional even if a single server goes down
+				for {
+					// need to check for current state before sending an rpc, otherwise we'll have orphan
+					// goroutines sending RPCs for this log entry even when the current node is not a leader
+					// anymore
+					if rf.currentState == Leader && rf.sendAppendEntries(server, args, reply) {
+
+						if reply.Success {
+							// increment success count
+							successCountMutex.Lock()
+							successCount++
+							successCountMutex.Unlock()
+							break
+						}
+
+						// we reach here if the follower's latest entry does not match that of the leader's
+						// start a loop where leader goes back one log entry in every rpc until it finds a
+						// matching entry in the follower
+						newEntry := &LogEntry{Command: command, Term: rf.currentTerm}
+						logIdx := rf.getLastLogIndex() - i
+						
+						// create a new slice to not modify the leader's log
+						entries := append([]*LogEntry(nil), rf.log[logIdx:]...)
+						entries = append(entries, newEntry)
+
+						args = &AppendEntriesArgs{
+							Term: rf.currentTerm,
+							LeaderId: rf.me,
+							PrevLogIndex: logIdx,
+							PrevLogTerm: rf.getLogTermAtIndex(logIdx),
+							Entries: entries,
+						}
+						reply = &AppendEntriesReply{}
+
+						i++
+					} else if rf.currentState != Leader {
+						break
+					}
+
+					// wait before sending another rpc
+					time.Sleep(time.Millisecond * 10)
+				}
+			}(idx)
+		}
+	}
+
+	// wait for success, which will check if a majority of servers have acknowledged the new entry
+	for {
+		successCountMutex.Lock()
+
+		if successCount >= majority {
+			break
+		}
+
+		successCountMutex.Unlock()
+
+		// wait before checking again, keeping this more than 10 milliseconds since we send repeated rpcs at that interval
+		time.Sleep(time.Millisecond * 15)
+	}
+
+	successCountMutex.Unlock()
+	
 }
 
 // the tester doesn't halt goroutines created by Raft after each test,
@@ -361,6 +454,7 @@ func (rf *Raft) sendHeartbeats() {
 					PrevLogIndex: rf.getLastLogIndex(),
 					PrevLogTerm:  rf.getLastLogTerm(),
 					Entries:      []*LogEntry{{Command: "", Term: rf.currentTerm}},
+					CommitIndex:  rf.commitIndex,
 				}
 				reply := &AppendEntriesReply{}
 
@@ -532,6 +626,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		candidateVotedFor: -1,
 		log:               make([]*LogEntry, 0),
 		currentState:      Follower,
+		nextIndex: make([]int, len(peers)),
+		matchIndex: make([]int, len(peers)),
 	}
 
 	// initialize from state persisted before a crash
